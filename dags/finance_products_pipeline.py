@@ -306,7 +306,7 @@ def finance_products_pipeline():
     branch >> [send_email, skip_email]
 
     # shift 연산자로 실행 순서 표현
-    [deposit_url, saving_url] >> api_payload >> transformed_records >> upserted_count >> procedure_result >> branch
+    [deposit_url, saving_url] >> api_payload >> transformed_records >> validated_records >> upserted_count >> procedure_result >> branch
     branch >> [send_email, skip_email]
 
 
