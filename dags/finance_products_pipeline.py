@@ -1,5 +1,4 @@
 import os
-import json
 import smtplib
 from email.message import EmailMessage
 from datetime import datetime
@@ -214,14 +213,7 @@ def finance_products_pipeline():
             return 0
 
         detail_url = "https://tech-semina-o9fy4ztqcxvobomlnzychy.streamlit.app/"
-        text_footer = (
-            "\n\n자세한 사항은 아래 링크를 통해 확인할 수 있습니다.\n"
-            f"{detail_url}"
-        )
-        html_footer = (
-            '<p>자세한 사항은 아래 링크를 통해 확인할 수 있습니다.</p>'
-            f'<p><a href="{detail_url}">{detail_url}</a></p>'
-        )
+        text_footer = f"\n\n자세한 사항은 아래 링크를 통해 확인할 수 있습니다.\n{detail_url}"
         display_columns = [
             "상품 타입",
             "비교 우리 은행 상품",
@@ -238,42 +230,50 @@ def finance_products_pipeline():
 
         if isinstance(procedure_result, list) and procedure_result:
             df = pd.DataFrame(procedure_result)
+        elif isinstance(procedure_result, dict):
+            df = pd.DataFrame([procedure_result])
+        else:
+            text_body = f"결과를 파싱할 수 없습니다.\nResult:\n{procedure_result}{text_footer}"
+            df = None
+
+        if df is not None:
             df = df[[col for col in df.columns if col not in excluded_columns]]
             ordered_cols = [col for col in display_columns if col in df.columns]
             if ordered_cols:
                 df = df[ordered_cols]
-            text_body = (
-                f"Rows: {len(df)}\n\n"
-                f"{df.to_string(index=False)}"
-            ) + text_footer
-            html_body = (
-                f"<p>Rows: {len(df)}</p>"
-                + df.to_html(index=False, border=1, justify="left")
-                + html_footer
-            )
-        elif isinstance(procedure_result, dict):
-            filtered = {k: v for k, v in procedure_result.items() if k not in excluded_columns}
-            df = pd.DataFrame([filtered])
-            ordered_cols = [col for col in display_columns if col in df.columns]
-            if ordered_cols:
-                df = df[ordered_cols]
-            text_body = (
-                "Rows: 1\n\n"
-                f"{df.to_string(index=False)}"
-            ) + text_footer
-            html_body = (
-                "<p>Rows: 1</p>"
-                + df.to_html(index=False, border=1, justify="left")
-                + html_footer
-            )
-        else:
-            text_body = (
-                f"Result:\n{procedure_result}"
-            ) + text_footer
-            html_body = (
-                f"<pre>{procedure_result}</pre>"
-                + html_footer
-            )
+
+            if "최대 금리차" in df.columns:
+                df["최대 금리차"] = pd.to_numeric(df["최대 금리차"], errors="coerce")
+                df = df.sort_values(by="최대 금리차", ascending=False, na_position="last")
+
+            if "타행 상품명" in df.columns:
+                df["타행 상품명"] = (
+                    df["타행 상품명"]
+                    .astype(str)
+                    .str.replace(r"[\r\n]+", " ", regex=True)
+                    .str.strip()
+                )
+                # Sorted by rate gap desc above, so keep first == keep max gap row per product name.
+                df = df.drop_duplicates(subset=["타행 상품명"], keep="first")
+
+            top5 = df.head(5)
+            if top5.empty:
+                text_body = f"추천 결과가 없습니다.{text_footer}"
+            else:
+                lines = [
+                    "금리차 상위 5개 상품입니다.",
+                    f"(전체 {len(df)}건 중 상위 {len(top5)}건)",
+                    "",
+                ]
+                for item_no, (_, row) in enumerate(top5.iterrows(), start=1):
+                    bank_name = row.get("타행명", "-")
+                    product_name = row.get("타행 상품명", row.get("상품명", "-"))
+                    max_rate = row.get("타행 최대금리", row.get("최고 금리", "-"))
+                    rate_gap = row.get("최대 금리차", row.get("금리차", "-"))
+                    lines.append(
+                        f"{item_no}위 - {bank_name} | {product_name} | 최고 금리 {max_rate} | 금리차 {rate_gap}"
+                    )
+                text_body = "\n".join(lines) + text_footer
 
         sent_count = 0
         with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
@@ -285,7 +285,6 @@ def finance_products_pipeline():
                 message["From"] = smtp_from
                 message["To"] = recipient
                 message.set_content(text_body)
-                message.add_alternative(html_body, subtype="html")
                 server.send_message(message)
                 sent_count += 1
 
